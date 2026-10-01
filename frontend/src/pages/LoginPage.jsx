@@ -8,11 +8,12 @@
  *  - Friendly error messages for all common failure cases
  *  - Forgot password flow (sends reset email)
  *  - Resend verification email for unconfirmed accounts
- *  - Redirect to the originally requested page after login
+ *  - Role-based post-login redirection (admin→/admin, issuer→/issuer, student→/student)
+ *  - Preserves originally requested URL if permitted for user's role
  *  - Link to /register for new users
  */
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
 import {
   ShieldCheck,
@@ -28,23 +29,75 @@ import { useAuth } from '../context/AuthContext'
 import { resetPassword, resendVerificationEmail } from '../services/authService'
 
 function LoginPage() {
-  const { signIn } = useAuth()
+  const { signIn, profile, isAuthenticated } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
-
-  // After login, redirect to the page the user originally wanted, or /student
-  const from = location.state?.from?.pathname ?? '/student'
 
   const [email, setEmail]       = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading]   = useState(false)
   const [error, setError]       = useState(null)
   const [notice, setNotice]     = useState(null)
+  const [loginSuccess, setLoginSuccess] = useState(false)
 
   // Tracks whether the error is specifically an unconfirmed-email error
   // so we can show the "Resend verification" option.
   const [showResend, setShowResend]       = useState(false)
   const [resendLoading, setResendLoading] = useState(false)
+
+  // ── Role-based redirect after successful login ───────────────────────────────
+  useEffect(() => {
+    if (!loginSuccess || !isAuthenticated || !profile) {
+      return
+    }
+
+    const userRole = profile.role
+
+    // Ensure role is defined before redirecting
+    if (!userRole) {
+      console.warn('[LoginPage] User role is undefined, waiting for profile to load...')
+      return
+    }
+
+    const requestedPath = location.state?.from?.pathname
+
+    // Validate if the requested path is allowed for the user's role
+    const isPathAllowed = (path, role) => {
+      if (!path) return false
+      if (path === '/admin' && role === 'admin') return true
+      if (path === '/issuer' && role === 'issuer') return true
+      if (path === '/student' && role === 'student') return true
+      if (path === '/audit-logs' && (role === 'admin' || role === 'issuer')) return true
+      if (path === '/fraud-lab' && role === 'admin') return true
+      return false
+    }
+
+    // If the requested path is allowed for the user's role, use it
+    // Otherwise, redirect to the appropriate dashboard for their role
+    let destination
+    if (requestedPath && isPathAllowed(requestedPath, userRole)) {
+      destination = requestedPath
+    } else {
+      // Role-based default redirect
+      switch (userRole) {
+        case 'admin':
+          destination = '/admin'
+          break
+        case 'issuer':
+          destination = '/issuer'
+          break
+        case 'student':
+          destination = '/student'
+          break
+        default:
+          // Fallback if role is not recognized - log error and redirect to login
+          console.error('[LoginPage] Unrecognized user role:', userRole)
+          destination = '/login'
+      }
+    }
+
+    navigate(destination, { replace: true })
+  }, [loginSuccess, isAuthenticated, profile, location, navigate])
 
   // ── Sign in ────────────────────────────────────────────────────────────────
   const handleSubmit = async (e) => {
@@ -67,8 +120,9 @@ function LoginPage() {
       return
     }
 
-    // Success — navigate to the intended destination
-    navigate(from, { replace: true })
+    // Success — trigger redirect via useEffect
+    setLoginSuccess(true)
+    setLoading(false)
   }
 
   // ── Forgot password ───────────────────────────────────────────────────────
